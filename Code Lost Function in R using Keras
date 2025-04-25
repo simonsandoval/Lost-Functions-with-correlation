@@ -1,0 +1,171 @@
+# Lambda Evaluation Function
+evaluate_lambda <- function(lambda_values, data_train, data_val) {
+  results <- data.frame(
+    lambda = numeric(),
+    train_loss = numeric(),
+    val_loss = numeric(),
+    val_mse = numeric()
+  )
+  
+  for (lambda in lambda_values) {
+    # Define custom loss with current lambda
+    custom_loss <- function(y_true, y_pred) {
+      # Extract true and predicted values
+      y_true_reshaped <- tf$reshape(y_true, shape = c(-1L, 5L))
+      y_pred_reshaped <- tf$reshape(y_pred, shape = c(-1L, 5L))
+      
+      y_H_true  <- y_true_reshaped[,1]
+      y_BA_true <- y_true_reshaped[,2]
+      y_N_true  <- y_true_reshaped[,3]
+      y_V_true  <- y_true_reshaped[,4]
+      y_B_true  <- y_true_reshaped[,5]
+      
+      y_H_pred  <- y_pred_reshaped[,1]
+      y_BA_pred <- y_pred_reshaped[,2]
+      y_N_pred  <- y_pred_reshaped[,3]
+      y_V_pred  <- y_pred_reshaped[,4]
+      y_B_pred  <- y_pred_reshaped[,5]
+      
+      # Standard MSE for each variable
+      mse_H  <- k_mean(k_square(y_H_true - y_H_pred))
+      mse_BA <- k_mean(k_square(y_BA_true - y_BA_pred))
+      mse_N  <- k_mean(k_square(y_N_true - y_N_pred))
+      mse_V  <- k_mean(k_square(y_V_true - y_V_pred))
+      mse_B  <- k_mean(k_square(y_B_true - y_B_pred))
+      
+      mse_total <- mse_H + mse_BA + mse_N + mse_V + mse_B
+      
+      # Correlation Loss for V (dependent on H, BA, and N)
+      cor_H_V <- tf$abs(tf$reduce_mean((y_H_pred - tf$reduce_mean(y_H_pred)) * (y_V_pred - tf$reduce_mean(y_V_pred))) / 
+                         (tf$math$reduce_std(y_H_pred) * tf$math$reduce_std(y_V_pred) + tf$keras$backend$epsilon()) -
+                         tf$reduce_mean((y_H_true - tf$reduce_mean(y_H_true)) * (y_V_true - tf$reduce_mean(y_V_true))) / 
+                         (tf$math$reduce_std(y_H_true) * tf$math$reduce_std(y_V_true) + tf$keras$backend$epsilon()))
+      
+      cor_BA_V <- tf$abs(tf$reduce_mean((y_BA_pred - tf$reduce_mean(y_BA_pred)) * (y_V_pred - tf$reduce_mean(y_V_pred))) / 
+                          (tf$math$reduce_std(y_BA_pred) * tf$math$reduce_std(y_V_pred) + tf$keras$backend$epsilon()) -
+                          tf$reduce_mean((y_BA_true - tf$reduce_mean(y_BA_true)) * (y_V_true - tf$reduce_mean(y_V_true))) / 
+                          (tf$math$reduce_std(y_BA_true) * tf$math$reduce_std(y_V_true) + tf$keras$backend$epsilon()))
+
+      cor_N_V <- tf$abs(tf$reduce_mean((y_N_pred - tf$reduce_mean(y_N_pred)) * (y_V_pred - tf$reduce_mean(y_V_pred))) / 
+                         (tf$math$reduce_std(y_N_pred) * tf$math$reduce_std(y_V_pred) + tf$keras$backend$epsilon()) -
+                         tf$reduce_mean((y_N_true - tf$reduce_mean(y_N_true)) * (y_V_true - tf$reduce_mean(y_V_true))) / 
+                         (tf$math$reduce_std(y_N_true) * tf$math$reduce_std(y_V_true) + tf$keras$backend$epsilon()))
+      
+      # Correlation Loss for B (dependent on H, BA and N)
+      cor_H_B <- tf$abs(tf$reduce_mean((y_H_pred - tf$reduce_mean(y_H_pred)) * (y_B_pred - tf$reduce_mean(y_B_pred))) / 
+                         (tf$math$reduce_std(y_H_pred) * tf$math$reduce_std(y_B_pred) + tf$keras$backend$epsilon()) -
+                         tf$reduce_mean((y_H_true - tf$reduce_mean(y_H_true)) * (y_B_true - tf$reduce_mean(y_B_true))) / 
+                         (tf$math$reduce_std(y_H_true) * tf$math$reduce_std(y_B_true) + tf$keras$backend$epsilon()))
+      
+      cor_BA_B <- tf$abs(tf$reduce_mean((y_BA_pred - tf$reduce_mean(y_BA_pred)) * (y_B_pred - tf$reduce_mean(y_B_pred))) / 
+                          (tf$math$reduce_std(y_BA_pred) * tf$math$reduce_std(y_B_pred) + tf$keras$backend$epsilon()) -
+                          tf$reduce_mean((y_BA_true - tf$reduce_mean(y_BA_true)) * (y_B_true - tf$reduce_mean(y_B_true))) / 
+                          (tf$math$reduce_std(y_BA_true) * tf$math$reduce_std(y_B_true) + tf$keras$backend$epsilon()))
+      
+      cor_N_B <- tf$abs(tf$reduce_mean((y_N_pred - tf$reduce_mean(y_N_pred)) * (y_B_pred - tf$reduce_mean(y_B_pred))) / 
+                         (tf$math$reduce_std(y_N_pred) * tf$math$reduce_std(y_B_pred) + tf$keras$backend$epsilon()) -
+                         tf$reduce_mean((y_N_true - tf$reduce_mean(y_N_true)) * (y_B_true - tf$reduce_mean(y_B_true))) / 
+                         (tf$math$reduce_std(y_N_true) * tf$math$reduce_std(y_B_true) + tf$keras$backend$epsilon()))
+      
+      cor_total <- cor_H_V + cor_BA_V + cor_N_V + cor_H_B + cor_BA_B + cor_N_B
+      
+      # Use current lambda value
+      mse_total + lambda * cor_total
+    }
+    
+    # Reset and build model ([21:53]: denote the position in the training dataframe of 33 LiDAR metrics)
+    num_features <- ncol(as.matrix(data_train[,c(21:53)]))
+    
+    # Define the model architecture (it is an example with two layer dense of 64 and 32 units each one)
+    input_layer <- layer_input(shape = c(num_features))
+    shared_layer <- input_layer %>%
+      layer_dense(units = 64, activation = 'relu') %>%
+      layer_dense(units = 32, activation = 'relu')
+    
+    # Separate output layers for primary forest variables (H, BA, N)
+    output_H <- shared_layer %>%
+      layer_dense(units = 16, activation = 'relu') %>%
+      layer_dense(units = 1, name = "H")
+
+    output_BA <- shared_layer %>%
+      layer_dense(units = 16, activation = 'relu') %>%
+      layer_dense(units = 1, name = "BA")
+
+    output_N <- shared_layer %>%
+      layer_dense(units = 16, activation = 'relu') %>%
+      layer_dense(units = 1, name = "N")
+
+    # Combine H, BA, N outputs for V and B predictions
+    combined_features <- layer_concatenate(list(output_H, output_BA, output_N))
+
+    # Volume prediction using H, BA, and N estimates
+    output_V <- combined_features %>%
+      layer_dense(units = 16, activation = 'relu') %>%
+      layer_dense(units = 1, name = "V")
+
+    # Biomass prediction using H, BA, and N estimates
+    output_B <- combined_features %>%
+      layer_dense(units = 16, activation = 'relu') %>%
+      layer_dense(units = 1, name = "B")
+
+    # Build the final model
+    model <- keras_model(
+      inputs = input_layer,
+      outputs = layer_concatenate(list(output_H, output_BA, output_N, output_V, output_B))
+    )
+    
+    # Compile and train
+    model %>% compile(
+      optimizer = 'adam',
+      loss = custom_loss,
+      metrics = list('mse')
+    )
+    
+    history <- model %>% fit(
+      x = as.matrix(data_train[,c(21:53)]),
+      y = cbind(as.matrix(data_train[,17]), # position of H in dataframe
+                      as.matrix(data_train[,15]),       # position of BA in dataframe
+                      as.matrix(data_train[,14]),       # position of N in dataframe
+                      as.matrix(data_train[,19]),       # position of V in dataframe
+                      as.matrix(data_train[,20])),      # position of B in datframe
+      epochs = 100,
+      batch_size = 32,
+      validation_data = list(
+        as.matrix(data_val[,c(21:53)]),
+        cbind(as.matrix(data_val[,17]),
+                  as.matrix(data_val[,15]),
+                  as.matrix(data_val[,14]),
+                  as.matrix(data_val[,19]),
+                  as.matrix(data_val[,20]))
+      ),
+      verbose = 0  # Reduce output noise
+    )
+    
+    # Evaluate results
+    train_metrics <- tail(history$metrics$loss, 1)
+    val_metrics <- tail(history$metrics$val_loss, 1)
+    val_mse <- tail(history$metrics$val_mse, 1)
+    
+    # Store results
+    results <- rbind(results, data.frame(
+      lambda = lambda,
+      train_loss = train_metrics,
+      val_loss = val_metrics,
+      val_mse = val_mse
+    ))
+    
+    # Print progress
+    cat(sprintf("Completed lambda = %.3f\n", lambda))
+  }
+  
+  return(results)
+}
+
+# Test different lambda values
+lambda_values <- seq(0.01, 0.9, by = 0.1)
+lambda_results <- evaluate_lambda(lambda_values, data_train, data_val)
+
+# Find optimal lambda
+optimal_lambda <- lambda_results[which.min(lambda_results$val_loss), "lambda"]
+cat(sprintf("Optimal lambda value: %.3f\n", optimal_lambda))
+
